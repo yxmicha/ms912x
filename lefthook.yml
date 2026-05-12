@@ -1,0 +1,17 @@
+commit-msg:
+  commands:
+    kernel-commit-msg:
+      run: scripts/check-commit-msg.sh {1}
+
+pre-push:
+  commands:
+    checkpatch:
+      run: scripts/check-commits.sh
+    shellcheck:
+      glob: "**/*.sh"
+      run: shellcheck {all_files}
+    nix-fmt:
+      glob: "**/*.nix"
+      run: nixpkgs-fmt --check {all_files}
+    statix:
+      run: statix check .
