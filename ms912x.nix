@@ -18,8 +18,10 @@ stdenv.mkDerivation {
 
   installPhase = ''
     runHook preInstall
-    install -Dm644 drm/usbdisp_drm.ko "$out/lib/modules/${kernel.modDirVersion}/kernel/drivers/gpu/drm/usbdisp_drm.ko"
-    install -Dm644 drm/usbdisp_usb.ko "$out/lib/modules/${kernel.modDirVersion}/kernel/drivers/gpu/drm/usbdisp_usb.ko"
+    find drm -name '*.ko' | while IFS= read -r ko; do
+      install -Dm644 "$ko" \
+        "$out/lib/modules/${kernel.modDirVersion}/kernel/drivers/gpu/drm/$(basename "$ko")"
+    done
     runHook postInstall
   '';
 

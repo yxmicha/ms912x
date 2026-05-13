@@ -1,0 +1,15 @@
+usb_hal_o += $(addprefix ../usb_hal/, $(USB_HAL))
+usbdisp_drm-y :=
+usbdisp_usb-y :=
+obj-m :=
+
+ifneq ($(usbdisp_drm-y),)
+obj-m += usbdisp_drm.o
+endif
+
+ifneq ($(usbdisp_usb-y),)
+obj-m += usbdisp_usb.o
+endif
+
+ccflags-y := -isystem include/drm -I$(HAL_PATH) $(CFLAGS) $(EL8FLAG) $(RPIFLAG)
+CFLAGS_usbdisp_usb.o += -I$(HAL_PATH)
