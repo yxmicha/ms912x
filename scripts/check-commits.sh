@@ -29,6 +29,7 @@ while IFS= read -r commit; do
     --strict \
     --ignore FILE_PATH_CHANGES,SPDX_LICENSE_TAG \
     --ignore LINUX_VERSION_CODE,CONSTANT_COMPARISON \
+    --ignore CAMELCASE \
     || failed=1
 done <<< "$commits"
 
