@@ -29,4 +29,7 @@ extern struct msdisp_hal_dev ms9132_dev;
 extern struct msdisp_hal_dev ms9133_dev;
 extern struct msdisp_hal_dev ms9135_dev;
 
+struct usb_device;
+s32 ms9132_xdata_write_byte(struct usb_device *udev, u16 addr, u8 data);
+
 #endif
