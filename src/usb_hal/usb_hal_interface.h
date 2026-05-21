@@ -103,4 +103,7 @@ void usb_hal_init_gpio(struct usb_hal *hal);
 void usb_hal_resume_gpio(struct usb_hal *hal);
 void usb_hal_read_custom_timing(struct usb_hal *hal);
 
+void usb_hal_sysfs_init(struct usb_interface *interface);
+void usb_hal_sysfs_exit(struct usb_interface *interface);
+
 #endif
