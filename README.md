@@ -12,16 +12,19 @@ works on Wayland.) The device connects over USB and presents itself as a
 
 Two existing options both had problems:
 
-- **MacroSilicon's official driver** — unusably laggy.
+- **MacroSilicon's official driver** — unusably laggy. Sends a full
+  framebuffer over USB on every update, saturating bandwidth.
 - **Other open-source implementations** — do not work at all with this
   device. The 345f:9132 uses a different partial painting protocol from
   what those drivers implement, so frames are never displayed correctly.
 
-This driver implements the correct partial painting protocol for the
-345f:9132 and is unrelated to either of the above. It is designed to work
-on Wayland on machines where the other displays are driven by a GPU —
-the common case where existing drivers that rely on GPU render offload
-are not an option.
+This driver is derived from MacroSilicon's official source and reworked
+to fix the performance problems. It keeps the correct USB protocol for the
+345f:9132 while replacing the full-frame transfer path with damage-tracked
+partial updates and double-buffered async USB submission. It is designed
+to work on Wayland on machines where the other displays are driven by a
+GPU — the common case where existing drivers that rely on GPU render
+offload are not an option.
 
 ## Performance
 
