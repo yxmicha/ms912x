@@ -54,13 +54,14 @@ fragmentation pressure under sustained use.
 
 ## Device
 
-| Field       | Value              |
-|-------------|--------------------|
-| Vendor      | MacroSilicon       |
-| USB ID      | `345f:9132`        |
-| Driver      | `usbdisp_drm`      |
-| Interface   | USB 3.0            |
-| Output      | HDMI (up to 1080p) |
+| Field       | Value                              |
+|-------------|------------------------------------|
+| Vendor      | MacroSilicon                       |
+| USB ID      | `345f:9132` (tested)               |
+| USB ID      | `345f:9133`, `345f:9135` (untested)|
+| Driver      | `usbdisp_drm`                      |
+| Interface   | USB 3.0                            |
+| Output      | HDMI (up to 1080p)                 |
 
 ## Kernel support
 
