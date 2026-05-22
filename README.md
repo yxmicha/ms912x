@@ -23,6 +23,32 @@ on Wayland on machines where the other displays are driven by a GPU —
 the common case where existing drivers that rely on GPU render offload
 are not an option.
 
+## Performance
+
+The MacroSilicon official driver sends a full framebuffer over USB on every
+update — at 1920×1080 with YUV422 encoding that is ~4 MB per frame, saturating
+USB bandwidth and causing the lag that makes it unusable. This driver avoids
+that in several ways:
+
+**Damage tracking.** The DRM atomic commit path uses
+`drm_atomic_helper_damage_merged` to compute the dirty rectangle reported by
+the compositor. Only the changed region is encoded and sent over USB. For
+typical desktop use — cursor movement, a single window updating — this reduces
+transfer size by an order of magnitude or more.
+
+**Double-buffered async USB submission.** Two transfer buffers are kept
+in-flight. While one buffer is being transmitted by the USB host controller,
+the driver encodes the next frame into the second buffer. The encoding and USB
+transfer overlap, eliminating the stall-per-frame of the upstream design.
+
+**Direct shadow plane mapping.** Source pixels are read directly from the
+shadow plane's pre-mapped framebuffer. There is no intermediate copy and no
+`dma_buf_begin/end_cpu_access` round-trip.
+
+**Scatter-gather URBs.** Transfers use scatter-gather rather than a
+contiguous vmalloc buffer, removing one large allocation and avoiding
+fragmentation pressure under sustained use.
+
 ## Device
 
 | Field       | Value              |
