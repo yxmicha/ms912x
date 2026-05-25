@@ -254,20 +254,43 @@ static int usb_hal_pack_xrgb8888_rect(struct usb_hal_frame_request *request,
 				      const u8 *buf, int pitch,
 				      int x1, int y1, int x2, int y2)
 {
+	struct usb_hal_dev *usb_dev = request->usb_dev;
+	struct usb_hal_cursor_buffer *cursor = &usb_dev->cursor_buf;
 	struct usb_hal_frame_update_header *header = request->transfer_buffer;
 	u8 *dst = request->transfer_buffer + sizeof(*header);
 	int row, col;
 	int width = x2 - x1;
 	int height = y2 - y1;
 	size_t transfer_len = width * height * 2 + sizeof(*header) + sizeof(usb_hal_end_of_buffer);
+	bool cursor_valid;
+	int cur_x, cur_y, cur_x1, cur_y1, cur_x2, cur_y2;
 
 	if (transfer_len > request->alloc_len)
 		return -EINVAL;
 
 	usb_hal_frame_header_set(header, x1, y1, width, height);
 
+	mutex_lock(&cursor->mutex);
+	cursor_valid = cursor->valid;
+	cur_x  = cursor->x;
+	cur_y  = cursor->y;
+	cur_x1 = cursor->x1;
+	cur_y1 = cursor->y1;
+	cur_x2 = cursor->x2;
+	cur_y2 = cursor->y2;
+	mutex_unlock(&cursor->mutex);
+
 	for (row = y1; row < y2; row++) {
 		const u8 *src = buf + row * pitch + x1 * 4;
+		bool in_cursor_row;
+		int cy = 0;
+
+		if (cursor_valid) {
+			cy = row - cur_y;
+			in_cursor_row = cy >= cur_y1 && cy < cur_y2;
+		} else {
+			in_cursor_row = false;
+		}
 
 		for (col = 0; col < width; col += 2) {
 			int b1 = src[0];
@@ -276,6 +299,31 @@ static int usb_hal_pack_xrgb8888_rect(struct usb_hal_frame_request *request,
 			int b2 = src[4];
 			int g2 = src[5];
 			int r2 = src[6];
+
+			if (in_cursor_row) {
+				int cx1 = (x1 + col) - cur_x;
+				int cx2 = cx1 + 1;
+
+				if (cx1 >= cur_x1 && cx1 < cur_x2) {
+					const u8 *cp = cursor->buf +
+						(cy * USB_HAL_CURSOR_WIDTH + cx1) * 4;
+					int a = cp[3];
+
+					b1 = ((a * cp[0]) + ((255 - a) * b1)) >> 8;
+					g1 = ((a * cp[1]) + ((255 - a) * g1)) >> 8;
+					r1 = ((a * cp[2]) + ((255 - a) * r1)) >> 8;
+				}
+				if (cx2 >= cur_x1 && cx2 < cur_x2) {
+					const u8 *cp = cursor->buf +
+						(cy * USB_HAL_CURSOR_WIDTH + cx2) * 4;
+					int a = cp[3];
+
+					b2 = ((a * cp[0]) + ((255 - a) * b2)) >> 8;
+					g2 = ((a * cp[1]) + ((255 - a) * g2)) >> 8;
+					r2 = ((a * cp[2]) + ((255 - a) * r2)) >> 8;
+				}
+			}
+
 			int y0 = ((263 * r1 + 516 * g1 + 97 * b1) >> 10) + 16;
 			int u0 = ((-152 * r1 - 298 * g1 + 450 * b1) >> 10) + 128;
 			int v0 = ((450 * r1 - 377 * g1 - 73 * b1) >> 10) + 128;

@@ -63,17 +63,15 @@ static struct msdisp_drm_pipeline *
 get_pipeline_by_plane(struct drm_plane *plane)
 {
 	struct msdisp_drm_device *msdisp_drm = to_msdisp_drm(plane->dev);
-	struct msdisp_drm_pipeline *pipeline = NULL;
 	int i;
 
 	for (i = 0; i < msdisp_drm->pipeline_cnt; i++) {
-		if (msdisp_drm->pipeline[i].crtc->primary == plane) {
-			pipeline = &msdisp_drm->pipeline[i];
-			break;
-		}
-	}
+		struct drm_crtc *crtc = msdisp_drm->pipeline[i].crtc;
 
-	return pipeline;
+		if (crtc->primary == plane || crtc->cursor == plane)
+			return &msdisp_drm->pipeline[i];
+	}
+	return NULL;
 }
 
 static struct msdisp_drm_pipeline *
@@ -138,12 +136,24 @@ int msdisp_drm_crtc_atomic_check(struct drm_crtc *crtc,
 #else
 	struct drm_crtc_state *crtc_state = new_state;
 #endif
-	bool has_primary = crtc_state->plane_mask & drm_plane_mask(crtc->primary);
+	bool has_primary;
+	int ret;
 
+	/*
+	 * Add all currently-active planes to the commit first so that a
+	 * cursor-only update (which arrives with only the cursor plane in
+	 * plane_mask) also drags in the primary plane.  The has_primary check
+	 * below must run after this to see the updated plane_mask.
+	 */
+	ret = drm_atomic_add_affected_planes(crtc_state->state, crtc);
+	if (ret)
+		return ret;
+
+	has_primary = crtc_state->plane_mask & drm_plane_mask(crtc->primary);
 	if (has_primary != crtc_state->enable)
 		return -EINVAL;
 
-	return drm_atomic_add_affected_planes(crtc_state->state, crtc);
+	return 0;
 }
 
 void msdisp_drm_crtc_atomic_enable(struct drm_crtc *crtc,
@@ -244,81 +254,12 @@ static void msdisp_drm_disable_vblank(struct drm_crtc *crtc)
 }
 #endif
 
-static int
-msdisp_crtc_cursor_set(struct drm_crtc *crtc, struct drm_file *file_priv,
-		       u32 buffer_handle, u32 width, u32 height)
-{
-	int ret = 0;
-	void *vmapping;
-	struct msdisp_usb_hal *usb_hal;
-	struct drm_gem_object *obj;
-	struct page **pages;
-	struct msdisp_drm_pipeline *pipeline = get_pipeline_by_crtc(crtc);
-
-	if (!pipeline)
-		return ret;
-
-	usb_hal = pipeline->usb_hal;
-	if (!usb_hal)
-		return ret;
-
-	if (buffer_handle == 0) {
-		usb_hal->funcs->cursor_set(usb_hal, NULL);
-		return 0;
-	}
-
-	if (width != 64 || height != 64) {
-		dev_err(crtc->dev->dev, "We currently only support 64x64 cursors: %dx%d\n",
-			width, height);
-		return -EINVAL;
-	}
-
-	obj = drm_gem_object_lookup(file_priv, buffer_handle);
-	if (!obj)
-		goto unlock;
-
-	if (obj->size == 0 || obj->size < width * height * 4) {
-		dev_err(crtc->dev->dev, "Buffer is too small\n");
-		goto unlock;
-	}
-
-	pages = drm_gem_get_pages(obj);
-	vmapping = vmap(pages, 4, 0, PAGE_KERNEL);
-
-	usb_hal->funcs->cursor_set(usb_hal, vmapping);
-	vunmap(vmapping);
-	kvfree(pages);
-
-unlock:
-	return ret;
-}
-
-static int
-msdisp_crtc_cursor_move(struct drm_crtc *crtc, int x, int y)
-{
-	struct msdisp_drm_pipeline *pipeline = get_pipeline_by_crtc(crtc);
-	struct msdisp_usb_hal *usb_hal;
-
-	if (!pipeline)
-		return 0;
-
-	usb_hal = pipeline->usb_hal;
-	if (!usb_hal)
-		return 0;
-
-	usb_hal->funcs->cursor_move(usb_hal, x, y);
-
-	return 0;
-}
-
 static const struct drm_crtc_funcs msdisp_drm_crtc_funcs = {
 	.reset                  = drm_atomic_helper_crtc_reset,
 	.destroy                = msdisp_drm_crtc_destroy,
 	.set_config             = drm_atomic_helper_set_config,
 	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
 	.atomic_destroy_state   = drm_atomic_helper_crtc_destroy_state,
-	.cursor_set             = msdisp_crtc_cursor_set,
-	.cursor_move            = msdisp_crtc_cursor_move,
 #if KERNEL_VERSION(5, 11, 0) <= LINUX_VERSION_CODE || defined(RPI) || defined(EL8)
 	.enable_vblank          = msdisp_drm_enable_vblank,
 	.disable_vblank         = msdisp_drm_disable_vblank,
@@ -465,6 +406,44 @@ static const struct drm_plane_helper_funcs msdisp_drm_plane_helper_funcs = {
 #endif
 };
 
+#if KERNEL_VERSION(5, 13, 0) <= LINUX_VERSION_CODE
+static void msdisp_drm_cursor_plane_atomic_update(struct drm_plane *plane,
+						  PLANE_ATOMIC_STATE_PARAM)
+{
+	struct msdisp_drm_pipeline *pipeline = get_pipeline_by_plane(plane);
+	struct drm_plane_state *state = plane->state;
+	struct msdisp_usb_hal *usb_hal;
+	struct drm_shadow_plane_state *shadow_state;
+
+	if (!pipeline)
+		return;
+
+	mutex_lock(&pipeline->hal_lock);
+	usb_hal = pipeline->usb_hal;
+	if (!usb_hal)
+		goto out;
+
+	if (state->fb) {
+		shadow_state = to_drm_shadow_plane_state(state);
+		if (!iosys_map_is_null(&shadow_state->data[0]))
+			usb_hal->funcs->cursor_set(usb_hal,
+						   (u8 *)shadow_state->data[0].vaddr);
+		usb_hal->funcs->cursor_move(usb_hal, state->crtc_x, state->crtc_y);
+	} else {
+		usb_hal->funcs->cursor_set(usb_hal, NULL);
+	}
+
+out:
+	mutex_unlock(&pipeline->hal_lock);
+}
+
+static const struct drm_plane_helper_funcs msdisp_drm_cursor_helper_funcs = {
+	.atomic_update = msdisp_drm_cursor_plane_atomic_update,
+	.prepare_fb    = drm_gem_plane_helper_prepare_fb,
+	DRM_GEM_SHADOW_PLANE_HELPER_FUNCS
+};
+#endif
+
 static const struct drm_plane_funcs msdisp_drm_plane_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
@@ -482,8 +461,27 @@ static const u32 formats[] = {
 	DRM_FORMAT_XRGB8888,
 };
 
+#if KERNEL_VERSION(5, 13, 0) <= LINUX_VERSION_CODE
+static const u32 cursor_formats[] = {
+	DRM_FORMAT_ARGB8888,
+};
+#endif
+
+/*
+ * Declare DRM_FORMAT_MOD_LINEAR as the only supported modifier so that
+ * drmModeAddFB2WithModifiers (used by GBM for cursor buffers) finds a
+ * matching plane and does not reject the FB with -EINVAL.  The sentinel
+ * DRM_FORMAT_MOD_INVALID terminates the list as required by
+ * drm_universal_plane_init().
+ */
+static const u64 plane_modifiers[] = {
+	DRM_FORMAT_MOD_LINEAR,
+	DRM_FORMAT_MOD_INVALID
+};
+
 static struct drm_plane *msdisp_drm_create_plane(struct drm_device *dev,
 						 enum drm_plane_type type,
+						 const u32 *fmts, int num_fmts,
 						 const struct drm_plane_helper_funcs *helper_funcs)
 {
 	struct drm_plane *plane;
@@ -497,8 +495,8 @@ static struct drm_plane *msdisp_drm_create_plane(struct drm_device *dev,
 
 	ret = drm_universal_plane_init(dev, plane, 0xFF,
 				       &msdisp_drm_plane_funcs,
-				       formats, ARRAY_SIZE(formats),
-				       NULL, type, plane_type);
+				       fmts, num_fmts,
+				       plane_modifiers, type, plane_type);
 	if (ret) {
 		dev_err(dev->dev, "Failed to initialize %s plane\n", plane_type);
 		kfree(plane);
@@ -514,21 +512,36 @@ static struct drm_crtc *msdisp_drm_crtc_init(struct drm_device *dev)
 {
 	struct drm_crtc *crtc;
 	struct drm_plane *primary_plane;
+	struct drm_plane *cursor_plane = NULL;
 
 	crtc = kzalloc(sizeof(*crtc), GFP_KERNEL);
 	if (!crtc)
 		return NULL;
 
 	primary_plane = msdisp_drm_create_plane(dev, DRM_PLANE_TYPE_PRIMARY,
+						formats, ARRAY_SIZE(formats),
 						&msdisp_drm_plane_helper_funcs);
-	if (!primary_plane)
+	if (!primary_plane) {
+		kfree(crtc);
 		return NULL;
+	}
+
+#if KERNEL_VERSION(5, 13, 0) <= LINUX_VERSION_CODE
+	cursor_plane = msdisp_drm_create_plane(dev, DRM_PLANE_TYPE_CURSOR,
+					       cursor_formats,
+					       ARRAY_SIZE(cursor_formats),
+					       &msdisp_drm_cursor_helper_funcs);
+	if (!cursor_plane) {
+		kfree(crtc);
+		return NULL;
+	}
+#endif
 
 #if KERNEL_VERSION(5, 0, 0) <= LINUX_VERSION_CODE || defined(EL8)
 	drm_plane_enable_fb_damage_clips(primary_plane);
 #endif
 
-	drm_crtc_init_with_planes(dev, crtc, primary_plane, NULL,
+	drm_crtc_init_with_planes(dev, crtc, primary_plane, cursor_plane,
 				  &msdisp_drm_crtc_funcs, NULL);
 	drm_crtc_helper_add(crtc, &msdisp_drm_helper_funcs);
 
@@ -551,14 +564,16 @@ int msdisp_drm_modeset_init(struct drm_device *dev)
 
 	drm_mode_config_init(dev);
 
-	dev->mode_config.min_width = 640;
-	dev->mode_config.min_height = 480;
+	dev->mode_config.min_width = 1;
+	dev->mode_config.min_height = 1;
 	dev->mode_config.max_width = 1920;
 	dev->mode_config.max_height = 1600;
-	dev->mode_config.cursor_width = 64;
-	dev->mode_config.cursor_height = 64;
 	dev->mode_config.prefer_shadow = 1;
 	dev->mode_config.preferred_depth = 32;
+#if KERNEL_VERSION(5, 13, 0) <= LINUX_VERSION_CODE
+	dev->mode_config.cursor_width = 64;
+	dev->mode_config.cursor_height = 64;
+#endif
 	dev->mode_config.funcs = &msdisp_drm_mode_funcs;
 
 	pipeline_cnt = msdisp_drm_get_pipeline_init_count();
