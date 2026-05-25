@@ -26,6 +26,22 @@ to work on Wayland on machines where the other displays are driven by a
 GPU — the common case where existing drivers that rely on GPU render
 offload are not an option.
 
+## Cursor
+
+On Wayland, Mutter moves the cursor by issuing cursor-plane-only atomic
+commits — it does not repaint the primary framebuffer when only the cursor
+moves. Our driver cannot process a commit that contains no primary plane
+update: the cursor is composited into the primary framebuffer's dirty
+rectangle before YUV encoding, so without a primary plane there is nothing
+to encode and send over USB. Without a cursor plane, those commits are
+rejected and the cursor never moves.
+
+The driver therefore exposes a `DRM_PLANE_TYPE_CURSOR` plane (64×64
+ARGB8888 + `DRM_FORMAT_MOD_LINEAR`), which causes Mutter to enter hardware
+cursor mode and route cursor updates through the cursor plane. This lets the
+driver ensure every atomic commit includes the primary plane, so there is
+always a frame to encode with the cursor already composited in.
+
 ## Performance
 
 The MacroSilicon official driver sends a full framebuffer over USB on every
